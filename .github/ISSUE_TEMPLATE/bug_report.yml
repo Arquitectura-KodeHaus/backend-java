@@ -1,18 +1,20 @@
 name: "Bug report"
 description: "Reporta un error"
-labels: [bug]
+labels: ["bug"]
 title: "[BUG] - <título corto>"
 body:
   - type: textarea
-  id: expected
-  attributes:
-    label: Comportamiento esperado
+    id: expected
+    attributes:
+      label: "Comportamiento esperado"
+
   - type: textarea
-  id: actual
-  attributes:
-    label: Comportamiento actual
+    id: actual
+    attributes:
+      label: "Comportamiento actual"
+
   - type: textarea
-  id: steps
-  attributes:
-    label: Pasos para reproducir
-    description: Paso a paso, incluye capturas si aplica
+    id: steps
+    attributes:
+      label: "Pasos para reproducir"
+      description: "Paso a paso, incluye capturas si aplica"
