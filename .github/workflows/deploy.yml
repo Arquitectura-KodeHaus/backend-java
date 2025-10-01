@@ -2,9 +2,9 @@ name: Build → Staging → (Approval) → Prod | backend-java
 
 on:
   push:
-    branches: ["prod"]          # dispara con push a prod
+    branches: ["prod"]
   pull_request:
-    branches: ["prod"]          # y también con PR hacia prod (solo llega hasta staging)
+    branches: ["prod"]
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +23,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Build local (una vez)
       - name: Build Docker image (local)
         run: docker build -t local/backend-java:${{ github.sha }} .
 
@@ -37,6 +36,8 @@ jobs:
 
       - name: Setup gcloud (STAGING)
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry (STAGING)
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
@@ -61,6 +62,8 @@ jobs:
       - name: Setup gcloud (PROD)
         if: github.event_name != 'pull_request'
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID_PROD }}
 
       - name: Configure Docker for Artifact Registry (PROD)
         if: github.event_name != 'pull_request'
@@ -79,7 +82,7 @@ jobs:
     name: Deploy to STAGING
     needs: [build_and_push]
     runs-on: ubuntu-latest
-    environment: staging          # este ambiente NO debe requerir aprobación
+    environment: staging
     steps:
       - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
@@ -112,9 +115,9 @@ jobs:
   deploy_production:
     name: Deploy to PRODUCTION (QA approval)
     needs: [deploy_staging]
-    if: github.event_name != 'pull_request'   # sólo tras push o manual
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: production                    # aquí configuras Required reviewers: QA
+    environment: production   # configura Required reviewers (QA) aquí
     steps:
       - name: Auth to Google Cloud (PROD via OIDC)
         uses: google-github-actions/auth@v2
