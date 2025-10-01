@@ -2,37 +2,40 @@ name: Build → Staging → (Approval) → Prod | backend-java
 
 on:
   push:
-    branches: ["prod"]
+    branches: ["prod"]          # push a prod
   pull_request:
-    branches: ["prod"]
+    branches: ["prod"]          # PR hacia prod: solo llega a staging
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-backend-java
-  cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write
 
-jobs:
-  build_and_push:
-    name: Build & Push image(s)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-backend-java
+  cancel-in-progress: false
 
-      - name: Build Docker image (local)
+# -----------------------------
+# 1) Build & Push (STAGING)
+# -----------------------------
+jobs:
+  build_push_staging:
+    name: Build & Push (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
         run: docker build -t local/backend-java:${{ github.sha }} .
 
-      # ===== STAGING (kodehaus-test) =====
       - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ vars.DEPLOY_SA }}
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          service_account:         ${{ vars.DEPLOY_SA }}
+          project_id:              ${{ vars.GCP_PROJECT_ID }}
+          export_environment_variables: true
 
       - name: Setup gcloud (STAGING)
         uses: google-github-actions/setup-gcloud@v2
@@ -50,27 +53,38 @@ jobs:
           docker push "$STG_IMG:${{ github.sha }}"
           docker push "$STG_IMG:staging"
 
-      # ===== PROD (kodehaus-prod) — solo en push, no en PR =====
+# -----------------------------
+# 2) Build & Push (PROD) - solo en push
+# -----------------------------
+  build_push_prod:
+    name: Build & Push (prod)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [build_push_staging]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t local/backend-java:${{ github.sha }} .
+
       - name: Auth to Google Cloud (PROD via OIDC)
-        if: github.event_name != 'pull_request'
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
-          service_account: ${{ vars.DEPLOY_SA_PROD }}
-          project_id: ${{ vars.GCP_PROJECT_ID_PROD }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}         # secreto del env production
+          service_account:         ${{ vars.DEPLOY_SA_PROD }}
+          project_id:              ${{ vars.GCP_PROJECT_ID_PROD }}
+          export_environment_variables: true
 
       - name: Setup gcloud (PROD)
-        if: github.event_name != 'pull_request'
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ vars.GCP_PROJECT_ID_PROD }}
 
       - name: Configure Docker for Artifact Registry (PROD)
-        if: github.event_name != 'pull_request'
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Tag & Push (PROD)
-        if: github.event_name != 'pull_request'
         run: |
           PROD_IMG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_PROD }}/${{ vars.ARTIFACT_REPO }}/backend-java"
           docker tag local/backend-java:${{ github.sha }} "$PROD_IMG:${{ github.sha }}"
@@ -78,18 +92,21 @@ jobs:
           docker push "$PROD_IMG:${{ github.sha }}"
           docker push "$PROD_IMG:latest"
 
+# -----------------------------
+# 3) Deploy STAGING
+# -----------------------------
   deploy_staging:
-    name: Deploy to STAGING
-    needs: [build_and_push]
+    name: Deploy STAGING
     runs-on: ubuntu-latest
     environment: staging
+    needs: [build_push_staging]
     steps:
       - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ vars.DEPLOY_SA }}
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          service_account:         ${{ vars.DEPLOY_SA }}
+          project_id:              ${{ vars.GCP_PROJECT_ID }}
 
       - name: Deploy Cloud Run (staging)
         id: deploy_stg
@@ -112,19 +129,22 @@ jobs:
           [[ "$code" == "200" ]] || { echo "Smoke test falló ($code)"; exit 1; }
           echo "Staging OK: $URL" >> "$GITHUB_STEP_SUMMARY"
 
+# -----------------------------
+# 4) Deploy PROD (requiere aprobación del env)
+# -----------------------------
   deploy_production:
-    name: Deploy to PRODUCTION (QA approval)
-    needs: [deploy_staging]
+    name: Deploy PRODUCTION (QA approval)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: production   # configura Required reviewers (QA) aquí
+    environment: production     # aquí aplica el gate de QA
+    needs: [deploy_staging, build_push_prod]
     steps:
       - name: Auth to Google Cloud (PROD via OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
-          service_account: ${{ vars.DEPLOY_SA_PROD }}
-          project_id: ${{ vars.GCP_PROJECT_ID_PROD }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:         ${{ vars.DEPLOY_SA_PROD }}
+          project_id:              ${{ vars.GCP_PROJECT_ID_PROD }}
 
       - name: Deploy Cloud Run (prod)
         id: deploy_prod
@@ -138,7 +158,7 @@ jobs:
             --service-account=${{ vars.RUNTIME_SA_PROD }}
             --set-env-vars=GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID_PROD }}
 
-      - name: Publica URL de producción
+      - name: Publica URL PROD
         shell: bash
         run: |
           echo "PROD URL: ${{ steps.deploy_prod.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
