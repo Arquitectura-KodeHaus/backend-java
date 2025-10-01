@@ -22,6 +22,7 @@ jobs:
   build:
     name: Build & Push to TEST registry
     runs-on: ubuntu-latest
+    environment: staging  # Necesita acceder a secretos de TEST/staging
     steps:
       - uses: actions/checkout@v4
 
@@ -81,23 +82,42 @@ jobs:
     runs-on: ubuntu-latest
     environment: production      # <— aquí GitHub pedirá aprobación del equipo
     steps:
-      - name: Auth to GCP (PROD) via OIDC
+      - name: Checkout (needed for docker context)
+        uses: actions/checkout@v4
+
+      - name: Auth to GCP (TEST) via OIDC for pulling image
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_TEST }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_TEST }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Docker auth to TEST registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Pull image from TEST
+        run: |
+          SRC="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          docker pull "$SRC"
+
+      - name: Auth to GCP (PROD) via OIDC for pushing and deploying
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
 
-      - name: Setup gcloud
+      - name: Setup gcloud for PROD
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Docker auth
+      - name: Docker auth to PROD registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Copy image TEST → PROD
+      - name: Tag and push image to PROD
         run: |
           SRC="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
           DST="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
-          docker pull "$SRC"
           docker tag  "$SRC" "$DST"
           docker push "$DST"
 
