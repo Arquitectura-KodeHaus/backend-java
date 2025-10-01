@@ -20,18 +20,18 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Push to TEST registry
+    name: Build & Push to PROD registry
     runs-on: ubuntu-latest
-    environment: staging  # Necesita acceder a secretos de TEST/staging
+    environment: production  # Usa secretos de PROD
     steps:
       - uses: actions/checkout@v4
 
-      # Auth contra TEST (para publicar imagen)
-      - name: Auth to GCP (TEST) via OIDC
+      # Auth contra PROD (para publicar imagen)
+      - name: Auth to GCP (PROD) via OIDC
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_TEST }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_TEST }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -42,7 +42,7 @@ jobs:
       - name: Compute image tag
         id: img
         run: |
-          echo "image=${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "image=${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
       - name: Build & Push
         run: |
@@ -50,31 +50,31 @@ jobs:
           docker push "${{ steps.img.outputs.image }}"
 
   deploy_staging:
-    name: Deploy to STAGING (kodehaus-test)
+    name: Deploy to STAGING (usando PROD temporalmente)
     needs: [build]
     runs-on: ubuntu-latest
-    environment: staging
+    environment: production
     steps:
-      - name: Auth to GCP (TEST) via OIDC
+      - name: Auth to GCP (PROD) via OIDC
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_TEST }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_TEST }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --image "$IMAGE" \
-            --project "${{ secrets.GCP_PROJECT_ID_TEST }}" \
+            --project "${{ secrets.GCP_PROJECT_ID_PROD }}" \
             --region "${{ env.REGION }}" \
             --platform managed \
-            --service-account "run-backend-java@${{ secrets.GCP_PROJECT_ID_TEST }}.iam.gserviceaccount.com" \
+            --service-account "run-backend-java@${{ secrets.GCP_PROJECT_ID_PROD }}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
-            --set-env-vars=GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID_TEST }}
+            --set-env-vars=GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID_PROD }}
 
   promote_prod:
     name: Promote to PROD (approval gate)
@@ -85,41 +85,17 @@ jobs:
       - name: Checkout (needed for docker context)
         uses: actions/checkout@v4
 
-      - name: Auth to GCP (TEST) via OIDC for pulling image
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_TEST }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_TEST }}
-
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Docker auth to TEST registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Pull image from TEST
-        run: |
-          SRC="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
-          docker pull "$SRC"
-
-      - name: Auth to GCP (PROD) via OIDC for pushing and deploying
+      - name: Auth to GCP (PROD) via OIDC
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
 
-      - name: Setup gcloud for PROD
+      - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Docker auth to PROD registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Tag and push image to PROD
-        run: |
-          SRC="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
-          DST="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
-          docker tag  "$SRC" "$DST"
-          docker push "$DST"
 
       - name: Deploy to Cloud Run (PROD)
         run: |
