@@ -117,19 +117,19 @@ jobs:
           fi
           echo "STAGING OK: $URL"
 
-  deploy_production:
+    deploy_production:
     name: Deploy a PRODUCCIÓN (requiere aprobación QA)
     needs: [deploy_staging]
-    if: github.event_name == 'push'   # solo tras merge a prod, no en PR
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: production           # <— configura este environment con "Required reviewers: QA"
+    environment: production
     steps:
       - name: Auth to Google Cloud (PROD via OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}  # env: production
-          service_account:         ${{ vars.DEPLOY_SA }}                # env: production
-          project_id:              ${{ vars.GCP_PROJECT_ID }}           # env: production
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account:         ${{ vars.DEPLOY_SA }}
+          project_id:              ${{ vars.GCP_PROJECT_ID }}
 
       - name: Deploy Cloud Run (prod)
         id: deploy_prod
@@ -144,4 +144,6 @@ jobs:
             --set-env-vars=GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }}
 
       - name: Publica URL de producción
-        run: echo "PROD URL: ${{ steps.deploy_prod.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+        shell: bash
+        run: |
+          echo "PROD URL: ${{ steps.deploy_prod.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
