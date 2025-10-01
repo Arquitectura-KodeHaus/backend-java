@@ -1,9 +1,9 @@
-name: Build & Deploy (Cloud Run) - backend-java
+name: Build → Staging → (Approval) → Prod  | backend-java
 
 on:
   push:
-    branches: [ "main", "prod" ]
-  workflow_dispatch:
+    branches: [ "prod" ]         # solo corre en la rama prod
+  workflow_dispatch:              # permite correrlo a mano también
 
 permissions:
   id-token: write
@@ -14,14 +14,18 @@ env:
   AR_REPO: ${{ secrets.GCP_ARTIFACT_REPO }}
   SERVICE_NAME: backend-java
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ env.SERVICE_NAME }}
+  cancel-in-progress: false
+
 jobs:
-  staging:
-    if: ${{ github.ref == 'refs/heads/main' }}
+  build:
+    name: Build & Push to TEST registry
     runs-on: ubuntu-latest
-    environment: staging
     steps:
       - uses: actions/checkout@v4
 
+      # Auth contra TEST (para publicar imagen)
       - name: Auth to GCP (TEST) via OIDC
         uses: google-github-actions/auth@v2
         with:
@@ -34,34 +38,49 @@ jobs:
       - name: Docker auth to Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Compute image name
+      - name: Compute image tag
         id: img
         run: |
-          echo "image=${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${AR_REPO}/${SERVICE_NAME}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "image=${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
       - name: Build & Push
         run: |
           docker build -t "${{ steps.img.outputs.image }}" .
           docker push "${{ steps.img.outputs.image }}"
 
-      - name: Deploy to Cloud Run (STAGING)
+  deploy_staging:
+    name: Deploy to STAGING (kodehaus-test)
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Auth to GCP (TEST) via OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_TEST }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_TEST }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy
         run: |
-          gcloud run deploy "${SERVICE_NAME}" \
-            --image "${{ steps.img.outputs.image }}" \
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --image "$IMAGE" \
             --project "${{ secrets.GCP_PROJECT_ID_TEST }}" \
-            --region "${REGION}" \
+            --region "${{ env.REGION }}" \
             --platform managed \
             --service-account "run-backend-java@${{ secrets.GCP_PROJECT_ID_TEST }}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
             --set-env-vars=GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID_TEST }}
 
-  production:
-    if: ${{ github.ref == 'refs/heads/prod' }}
+  promote_prod:
+    name: Promote to PROD (approval gate)
+    needs: [deploy_staging]
     runs-on: ubuntu-latest
-    environment: production
+    environment: production      # <— aquí GitHub pedirá aprobación del equipo
     steps:
-      - uses: actions/checkout@v4
-
       - name: Auth to GCP (PROD) via OIDC
         uses: google-github-actions/auth@v2
         with:
@@ -71,29 +90,24 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Docker auth to Artifact Registry
+      - name: Docker auth
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Compute image names
-        id: names
+      - name: Copy image TEST → PROD
         run: |
-          SRC="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${AR_REPO}/${SERVICE_NAME}:${GITHUB_SHA}"
-          DST="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${AR_REPO}/${SERVICE_NAME}:${GITHUB_SHA}"
-          echo "src=$SRC" >> $GITHUB_OUTPUT
-          echo "dst=$DST" >> $GITHUB_OUTPUT
-
-      - name: Pull from STAGING & push to PROD
-        run: |
-          docker pull "${{ steps.names.outputs.src }}"
-          docker tag "${{ steps.names.outputs.src }}" "${{ steps.names.outputs.dst }}"
-          docker push "${{ steps.names.outputs.dst }}"
+          SRC="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_TEST }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          DST="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          docker pull "$SRC"
+          docker tag  "$SRC" "$DST"
+          docker push "$DST"
 
       - name: Deploy to Cloud Run (PROD)
         run: |
-          gcloud run deploy "${SERVICE_NAME}" \
-            --image "${{ steps.names.outputs.dst }}" \
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID_PROD }}/${{ env.AR_REPO }}/${{ env.SERVICE_NAME }}:${GITHUB_SHA}"
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --image "$IMAGE" \
             --project "${{ secrets.GCP_PROJECT_ID_PROD }}" \
-            --region "${REGION}" \
+            --region "${{ env.REGION }}" \
             --platform managed \
             --service-account "run-backend-java@${{ secrets.GCP_PROJECT_ID_PROD }}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
