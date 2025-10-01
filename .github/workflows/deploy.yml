@@ -15,7 +15,7 @@ env:
   SERVICE_NAME: backend-java
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ env.SERVICE_NAME }}
+  group: ${{ github.workflow }}-${{ github.ref }}-backend-java
   cancel-in-progress: false
 
 jobs:
