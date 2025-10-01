@@ -1,33 +1,33 @@
-name: CI/CD Cloud Run | backend-java
+name: Build → Staging → (Approval) → Prod | backend-java
 
 on:
   push:
-    branches: [ "prod" ]      # despliega a STAGING y deja listo el gate a PROD
+    branches: ["prod"]          # dispara con push a prod
   pull_request:
-    branches: [ "prod" ]      # en PR solo llega a STAGING (no PROD)
+    branches: ["prod"]          # y también con PR hacia prod (solo llega hasta staging)
   workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-backend-java
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   build_and_push:
-    name: Build & Push image
+    name: Build & Push image(s)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Build una vez (sin push todavía)
+      # Build local (una vez)
       - name: Build Docker image (local)
         run: docker build -t local/backend-java:${{ github.sha }} .
 
-      # --- Publica SIEMPRE a TEST (staging) ---
+      # ===== STAGING (kodehaus-test) =====
       - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
         with:
@@ -49,9 +49,9 @@ jobs:
           docker push "$STG_IMG:${{ github.sha }}"
           docker push "$STG_IMG:staging"
 
-      # --- (Opcional) Publica además a PROD registry en commits a prod ---
+      # ===== PROD (kodehaus-prod) — solo en push, no en PR =====
       - name: Auth to Google Cloud (PROD via OIDC)
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
@@ -59,27 +59,27 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID_PROD }}
 
       - name: Setup gcloud (PROD)
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for Artifact Registry (PROD)
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Tag & Push (PROD)
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: |
           PROD_IMG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_PROD }}/${{ vars.ARTIFACT_REPO }}/backend-java"
           docker tag local/backend-java:${{ github.sha }} "$PROD_IMG:${{ github.sha }}"
-          docker tag local/backend-java:${{ github.sha }} "$PROD_IMG:prod-candidate"
+          docker tag local/backend-java:${{ github.sha }} "$PROD_IMG:latest"
           docker push "$PROD_IMG:${{ github.sha }}"
-          docker push "$PROD_IMG:prod-candidate"
+          docker push "$PROD_IMG:latest"
 
   deploy_staging:
-    name: Deploy to STAGING (TEST)
+    name: Deploy to STAGING
     needs: [build_and_push]
     runs-on: ubuntu-latest
-    environment: staging        # este environment NO debe requerir aprobación
+    environment: staging          # este ambiente NO debe requerir aprobación
     steps:
       - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
@@ -112,9 +112,9 @@ jobs:
   deploy_production:
     name: Deploy to PRODUCTION (QA approval)
     needs: [deploy_staging]
-    if: github.event_name == 'push'   # solo tras push (no PR)
+    if: github.event_name != 'pull_request'   # sólo tras push o manual
     runs-on: ubuntu-latest
-    environment: production           # aquí pones Required reviewers = equipo QA
+    environment: production                    # aquí configuras Required reviewers: QA
     steps:
       - name: Auth to Google Cloud (PROD via OIDC)
         uses: google-github-actions/auth@v2
