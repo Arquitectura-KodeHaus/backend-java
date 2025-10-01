@@ -107,4 +107,31 @@ public class MerchantProductService {
             throw new RuntimeException(e);
         }
     }
+
+    public MerchantProductDto findByMerchant(String idMerchant) {
+        try {
+            // whereNotEqualTo
+            Query query = firestore.collection(COLLECTION_NAME).whereEqualTo("idMerchant", idMerchant);
+            List<MerchantProduct> merchantProductList = getMerchantProductsList(query);
+            return MerchantProductDto.builder().merchantProducts(merchantProductList).build();
+        } catch (InterruptedException | ExecutionException e) {
+            log.error(e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
+
+    public MerchantProductDto findActiveByCatalogProduct(String idCatalogProduct) {
+        try {
+            // whereNotEqualTo
+            Query query = firestore.collection(COLLECTION_NAME)
+                    .whereEqualTo("status", true)
+                    .whereEqualTo("idCatalogProduct", idCatalogProduct);
+                    
+            List<MerchantProduct> merchantProductList = getMerchantProductsList(query);
+            return MerchantProductDto.builder().merchantProducts(merchantProductList).build();
+        } catch (InterruptedException | ExecutionException e) {
+            log.error(e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
 }

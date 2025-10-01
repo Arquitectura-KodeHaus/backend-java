@@ -41,9 +41,14 @@ public class MerchantProductController {
         return ResponseEntity.ok(merchantProductService.getAllMerchantProducts());
     }
 
-    @GetMapping("/merchant/{id}")
+    @GetMapping("/merchant-active/{id}")
     public ResponseEntity<MerchantProductDto> getMerchantActiveProducts(@PathVariable("id") String id){
         return ResponseEntity.ok(merchantProductService.findActiveByMerchant(id));
+    }
+
+    @GetMapping("/merchant/{id}")
+    public ResponseEntity<MerchantProductDto> getMerchantProducts(@PathVariable("id") String id){
+        return ResponseEntity.ok(merchantProductService.findByMerchant(id));
     }
     
 
