@@ -1,100 +1,79 @@
-name: CI/CD Cloud Run (staging → prod con aprobación) | backend-java
+name: Build → Staging → (Approval) → Prod | backend-java
 
 on:
   push:
-    branches: [ "prod" ]          # tras merge a prod → se ejecuta
+    branches: [ "prod" ]            # dispara con push a prod
   pull_request:
-    branches: [ "prod" ]          # los PR hacia prod también corren (solo a staging)
-  workflow_dispatch:              # ejecutar manualmente si hace falta
+    branches: [ "prod" ]            # y también con PR hacia prod (si quieres)
+  workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
-
-# Evita carreras por rama/pipeline
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-backend-java
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  id-token: write
+
+# Usamos repository/environment vars para no duplicar
+# Define en Repo/Environments (staging y production):
+#   vars: GCP_REGION, ARTIFACT_REPO, GCP_PROJECT_ID, SERVICE_STAGING, SERVICE_PROD, DEPLOY_SA, RUNTIME_SA
+#   secrets: WIF_PROVIDER
 jobs:
-  build_and_push_both:
-    name: Build → push TEST (siempre) y PROD (solo en push)
+
+  build_image:
+    name: Build & Push image (staging registry)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- AUTH & PUSH A TEST (kodehaus-test / environment: staging) ----------
-      - name: Auth to Google Cloud (TEST via OIDC)
+      # ---------------- Build local ----------------
+      - name: Build Docker image (local)
+        run: docker build -t local/backend-java:${{ github.sha }} .
+
+      # ---------------- Auth STAGING ----------------
+      - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}   # env: staging
-          service_account:         ${{ vars.DEPLOY_SA }}            # env: staging
-          project_id:              ${{ vars.GCP_PROJECT_ID }}       # env: staging
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      - name: Set up gcloud (TEST)
+      - name: Setup gcloud (STAGING)
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker (TEST)
+      - name: Configure Docker to use Artifact Registry (STAGING)
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
-      - name: Build & Push image (TEST)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }}
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:staging
-
-      # ---------- AUTH & PUSH A PROD (solo cuando es push, NO en PR) ----------
-      - name: Auth to Google Cloud (PROD via OIDC)
-        if: github.event_name == 'push'
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}   # env: production
-          service_account:         ${{ vars.DEPLOY_SA }}                 # env: production
-          project_id:              ${{ vars.GCP_PROJECT_ID }}            # env: production
-
-      - name: Set up gcloud (PROD)
-        if: github.event_name == 'push'
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker (PROD)
-        if: github.event_name == 'push'
-        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - name: Retag & Push image (PROD)
-        if: github.event_name == 'push'
+      - name: Tag & Push (STAGING)
         run: |
-          SRC="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ env.TEST_PROJ || vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }}"
-          # reconstruimos sin repetir build usando cache del paso anterior
-          docker pull ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }} || true
-          docker tag  ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }} \
-                      ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:prod-${{ github.sha }}
-          docker push ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:prod-${{ github.sha }}
+          STG_IMG="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java"
+          docker tag local/backend-java:${{ github.sha }} "$STG_IMG:${{ github.sha }}"
+          docker tag local/backend-java:${{ github.sha }} "$STG_IMG:staging"
+          docker push "$STG_IMG:${{ github.sha }}"
+          docker push "$STG_IMG:staging"
 
   deploy_staging:
-    name: Deploy a STAGING (kodehaus-test)
-    needs: [build_and_push_both]
+    name: Deploy to STAGING
+    needs: [build_image]
     runs-on: ubuntu-latest
-    environment: staging            # este environment NO debe requerir aprobación
+    environment: staging              # este ambiente no debe requerir aprobación
     steps:
-      - name: Auth to Google Cloud (TEST via OIDC)
+      - name: Auth to Google Cloud (STAGING via OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}   # env: staging
-          service_account:         ${{ vars.DEPLOY_SA }}            # env: staging
-          project_id:              ${{ vars.GCP_PROJECT_ID }}       # env: staging
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Deploy Cloud Run (staging)
         id: deploy_stg
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: backend-java
+          service: ${{ vars.SERVICE_STAGING }}
           image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }}
           region: ${{ vars.GCP_REGION }}
-          # Puedes añadir flags extra (PUERTO, memoria, VPC, etc.)
           flags: >
             --allow-unauthenticated
             --service-account=${{ vars.RUNTIME_SA }}
@@ -104,39 +83,31 @@ jobs:
         shell: bash
         run: |
           URL="${{ steps.deploy_stg.outputs.url }}"
-          echo "STAGING URL: $URL"
-          # Para Spring Boot intenta primero /actuator/health, si no 200 prueba /
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/actuator/health" || true)
-          if [ "$STATUS" != "200" ]; then
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/" || true)
-          fi
-          echo "HTTP status: $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "Smoke test falló en STAGING"
-            exit 1
-          fi
-          echo "STAGING OK: $URL"
+          echo "Staging URL: $URL"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || true)
+          [[ "$code" == "200" ]] || { echo "Smoke test falló ($code)"; exit 1; }
+          echo "Staging OK" >> "$GITHUB_STEP_SUMMARY"
 
-    deploy_production:
-    name: Deploy a PRODUCCIÓN (requiere aprobación QA)
+  deploy_production:
+    name: Deploy to PRODUCTION (QA approval)
     needs: [deploy_staging]
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'     # solo tras push o manual
     runs-on: ubuntu-latest
-    environment: production
+    environment: production                      # aquí configuras Required reviewers: QA
     steps:
       - name: Auth to Google Cloud (PROD via OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
-          service_account:         ${{ vars.DEPLOY_SA }}
-          project_id:              ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}   # mismo nombre; secreto propio del env production
+          service_account: ${{ vars.DEPLOY_SA }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Deploy Cloud Run (prod)
         id: deploy_prod
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: backend-java
-          image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:prod-${{ github.sha }}
+          service: ${{ vars.SERVICE_PROD }}
+          image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/backend-java:${{ github.sha }}
           region: ${{ vars.GCP_REGION }}
           flags: >
             --allow-unauthenticated
