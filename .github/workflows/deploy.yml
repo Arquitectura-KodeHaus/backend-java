@@ -2,7 +2,7 @@ name: Build → Staging → (Approval) → Prod  | backend-java
 
 on:
   push:
-    branches: [ "prod" ]         # solo corre en la rama prod
+    branches: [ "prod", "feature/DEV-5435-products" ]  # temporal para testing
   workflow_dispatch:              # permite correrlo a mano también
 
 permissions:
